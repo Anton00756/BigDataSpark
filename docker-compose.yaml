@@ -1,0 +1,76 @@
+services:
+  postgres:
+    image: postgres:18.1
+    volumes:
+      - ./mock_data:/mock_data
+      - ./sql:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    networks:
+      - net
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.3-alpine
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - ./clickhouse_config/users.xml:/etc/clickhouse-server/users.xml
+      - ./clickhouse_config/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - net
+
+  spark-master:
+    image: bitnamilegacy/spark:3.5.1
+    environment:
+      - SPARK_MODE=master
+    ports:
+      - "7077:7077"
+      - "8080:8080"
+    volumes:
+      - ./jars:/opt/bitnami/spark/extra_jars
+      - ./py_jobs:/py_jobs
+    networks:
+      - net
+
+  spark-worker:
+    image: bitnamilegacy/spark:3.5.1
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+    depends_on:
+      - spark-master
+    networks:
+      - net
+
+  spark-submit:
+    image: bitnamilegacy/spark:3.5.1
+    depends_on:
+      - spark-master
+      - spark-worker
+    volumes:
+      - ./jars:/jars
+      - ./py_jobs:/py_jobs
+    command: >
+      bash -c "
+      until echo > /dev/tcp/spark-master/7077; do
+            echo 'Waiting for Spark master...';
+            sleep 2;
+      done &&
+      spark-submit --master spark://spark-master:7077 --jars /jars/postgresql-42.6.0.jar /py_jobs/postgres_star.py &&
+      spark-submit --master spark://spark-master:7077 --jars /jars/postgresql-42.6.0.jar,/jars/clickhouse-jdbc-0.4.6.jar /py_jobs/clickhouse_reports.py
+      "
+    networks:
+      - net
+
+networks:
+  net:
+    driver: bridge
